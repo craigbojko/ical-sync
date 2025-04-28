@@ -1,0 +1,59 @@
+{
+  "folders": [
+    {
+      "name": "Calendar Work Sync",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "./venv-calendar-work-sync/bin/python",
+    "launch": {
+      "configurations": [],
+      "version": "0.2.0"
+    },
+    "cSpell.words": [],
+    "explorer.autoReveal": false,
+    "task.allowAutomaticTasks": "on",
+    "terminal.integrated.profiles.osx": {
+      "zsh": {
+        "args": [
+          "-l",
+          "-i"
+        ],
+        "path": "/bin/zsh"
+      }
+    },
+    "terraform.codelens.referenceCount": true,
+    "terraform.languageServer.enable": false,
+    "workbench.colorCustomizations": {
+      "activityBar.activeBackground": "#56c686",
+      "activityBar.activeBorder": "#56c686",
+      "activityBar.background": "#000",
+      "activityBar.foreground": "#fff",
+      "activityBar.inactiveForeground": "#666",
+      "activityBarBadge.background": "#56c686",
+      "activityBarBadge.foreground": "#000",
+      "sash.hoverBorder": "#56c686",
+      "statusBar.background": "#000",
+      "statusBar.foreground": "#fff",
+      "statusBarItem.hoverBackground": "#56c686",
+      "statusBarItem.remoteBackground": "#56c686",
+      "statusBarItem.remoteForeground": "#000",
+      "titleBar.activeBackground": "#000",
+      "titleBar.activeForeground": "#56c686",
+      "titleBar.inactiveBackground": "#000",
+      "titleBar.inactiveForeground": "#15202b99"
+    },
+  },
+  "tasks": {
+    "presentation": {
+      "echo": false,
+      "focus": false,
+      "panel": "dedicated",
+      "reveal": "always",
+      "showReuseMessage": true
+    },
+    "tasks": [],
+    "version": "2.0.0"
+  }
+}
