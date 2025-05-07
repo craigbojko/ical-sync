@@ -5,7 +5,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from loadotenv import load_env
 from typing import TypedDict, Any
-
+from notion_client import Client
 
 # Load environment variables from ../.env
 load_env(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
@@ -14,12 +14,16 @@ ICS_URL = os.getenv("ICAL")
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE")
 PERSONAL_CAL_ID = "primary"
 
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+
 NUMBER_OF_DAYS_TO_SYNC = 14
 
 CONFIG = {
     'DBBUG': False,
     'MAX_EVENTS': 100,
 }
+
+notion = Client(auth=NOTION_API_KEY)
 
 idx = 0
 events_by_date = {}
@@ -89,54 +93,54 @@ def convert_to_utc(dt: datetime.datetime) -> datetime.datetime:
     return dt
 
 # 1. Fetch ICS
-resp = requests.get(ICS_URL)
-resp.raise_for_status()
-cal = Calendar.from_ical(resp.text)
+# resp = requests.get(ICS_URL)
+# resp.raise_for_status()
+# cal = Calendar.from_ical(resp.text)
 
-log(f"Fetched {len(cal.subcomponents)} components from ICS")
+# log(f"Fetched {len(cal.subcomponents)} components from ICS")
 
-now = datetime.datetime.now(datetime.timezone.utc)
-start_range = now
-end_range   = start_range + datetime.timedelta(days=NUMBER_OF_DAYS_TO_SYNC)
-log(f"Current time: {now}")
+# now = datetime.datetime.now(datetime.timezone.utc)
+# start_range = now
+# end_range   = start_range + datetime.timedelta(days=NUMBER_OF_DAYS_TO_SYNC)
+# log(f"Current time: {now}")
 
-recurring_ical_events = recurring_ical_events.of(cal).between(
-    start_range,
-    end_range
-)
+# recurring_ical_events = recurring_ical_events.of(cal).between(
+#     start_range,
+#     end_range
+# )
 
-for event in recurring_ical_events:
-    track_event(event)
+# for event in recurring_ical_events:
+#     track_event(event)
 
-for index, component in enumerate(cal.walk()):
-    if CONFIG['MAX_EVENTS'] and index >= CONFIG['MAX_EVENTS']:
-        log(f"DEBUG: Exiting after {index} events")
-        break
+# for index, component in enumerate(cal.walk()):
+#     if CONFIG['MAX_EVENTS'] and index >= CONFIG['MAX_EVENTS']:
+#         log(f"DEBUG: Exiting after {index} events")
+#         break
 
-    if component.name != "VEVENT":
-        continue
-    event: CalEvent = compile_event(component)
+#     if component.name != "VEVENT":
+#         continue
+#     event: CalEvent = compile_event(component)
     
-    # DEBUG: Print converted event details
-    if CONFIG['DBBUG']: log_event(component)
+#     # DEBUG: Print converted event details
+#     if CONFIG['DBBUG']: log_event(component)
     
-    # Skip past events - ensure both are aware datetime objects
-    if event.get('end') < now or event.get('all_day'):
-        # print(f"Skipping event {uid} - End time {end} is before current time {now}")
-        continue
+#     # Skip past events - ensure both are aware datetime objects
+#     if event.get('end') < now or event.get('all_day'):
+#         # print(f"Skipping event {uid} - End time {end} is before current time {now}")
+#         continue
     
-    # Add to events_by_date for later verification
-    track_event(event)
+#     # Add to events_by_date for later verification
+#     track_event(event)
 
 
-print(f"Events by date: {len(events_by_date)} dates")
-for date, events in events_by_date.items():
-    print(f"Date: {date}")
-    for event in events:
-        print("---")
-        print(f"  - Summary: {event['summary']}, Start: {event['start']}, End: {event['end']}")
-        # print(f"  - Raw:\n{event['raw']}")
-        print(" ")
+# print(f"Events by date: {len(events_by_date)} dates")
+# for date, events in events_by_date.items():
+#     print(f"Date: {date}")
+#     for event in events:
+#         print("---")
+#         print(f"  - Summary: {event['summary']}, Start: {event['start']}, End: {event['end']}")
+#         # print(f"  - Raw:\n{event['raw']}")
+#         print(" ")
 
 # Write to file
 # with open("events_by_date.txt", "w") as f:
@@ -147,3 +151,188 @@ for date, events in events_by_date.items():
 #             # f.write(f"  - Raw:\n{event['raw']}\n")
 #             f.write("\n")
 # print("Events written to events_by_date.txt")
+
+# user = notion.users.me()
+# print(f'Connected as:', user)
+
+# calendar_database = notion.databases.query(
+#     database_id=os.getenv("NOTION_DB_ID"),
+# )
+# print(f"Calendar database: ", calendar_database)
+
+# Add an event to Notion calendar database
+def sync_event_to_notion(event: CalEvent):
+    """
+    Sync an event to the Notion calendar database.
+    If the event already exists (by UID), update it.
+    If not, create a new event.
+    """
+    database_id = os.getenv("NOTION_DB_ID")
+    
+    # First, check if the event already exists by querying for its UID
+    existing_pages = notion.databases.query(
+        database_id=database_id,
+        filter={
+            "property": "EventUID",
+            "rich_text": {
+                "equals": event['uid']
+            }
+        }
+    ).get('results', [])
+    
+    # Prepare properties to update or create
+    properties = {
+        "Name": {
+            "title": [
+                {
+                    "text": {
+                        "content": event['summary']
+                    }
+                }
+            ]
+        },
+        "DueDate": {
+            "date": {
+                "start": event['start'].isoformat(),
+                "end": event['end'].isoformat()
+            }
+        },
+        "EventUID": {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": event['uid']
+                    }
+                }
+            ]
+        },
+        "AllDay": {
+            "checkbox": event['all_day']
+        }
+    }
+    
+    if existing_pages:
+        # Event exists, update it
+        page_id = existing_pages[0]['id']
+        log(f"Updating existing event in Notion: {event['summary']}")
+        
+        notion.pages.update(
+            page_id=page_id,
+            properties=properties
+        )
+        return page_id
+    else:
+        # Event doesn't exist, create it
+        log(f"Creating new event in Notion: {event['summary']}")
+        
+        response = notion.pages.create(
+            parent={
+                "type": "database_id",
+                "database_id": database_id
+            },
+            properties=properties
+        )
+        return response['id']
+
+def sync_calendar_to_notion():
+    """
+    Sync calendar events to Notion.
+    """
+    # Fetch current events from Notion for comparison/cleanup
+    database_id = os.getenv("NOTION_DB_ID")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    # Fetch the calendar data and process events
+    resp = requests.get(ICS_URL)
+    resp.raise_for_status()
+    cal = Calendar.from_ical(resp.text)
+    
+    log(f"Fetched {len(cal.subcomponents)} components from ICS")
+    
+    start_range = now
+    end_range = start_range + datetime.timedelta(days=NUMBER_OF_DAYS_TO_SYNC)
+    
+    # Get all events including recurring instances
+    events = recurring_ical_events.of(cal).between(start_range, end_range)
+    
+    synced_uids = []
+    
+    for event_component in events:
+        if event_component.name != "VEVENT":
+            continue
+            
+        event = compile_event(event_component)
+        
+        # Skip past events
+        if event['end'] < now:
+            log(f"Skipping past event: {event['summary']}")
+            continue
+            
+        # Sync to Notion
+        page_id = sync_event_to_notion(event)
+        synced_uids.append(event['uid'])
+        log(f"Synced event: {event['summary']}")
+    
+    # Optional: Remove events from Notion that no longer exist in the calendar
+    cleanup_orphaned_events(synced_uids, database_id)
+    
+    return len(synced_uids)
+
+def cleanup_orphaned_events(synced_uids, database_id):
+    """
+    Remove events from Notion that are no longer in the calendar.
+    """
+    # Get all events in Notion with dates in our sync range
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start_date = now.isoformat()
+    end_date = (now + datetime.timedelta(days=NUMBER_OF_DAYS_TO_SYNC)).isoformat()
+    
+    notion_events = notion.databases.query(
+        database_id=database_id,
+        filter={
+            "and": [
+                {
+                    "property": "DueDate",
+                    "date": {
+                        "on_or_after": start_date
+                    }
+                },
+                {
+                    "property": "DueDate",
+                    "date": {
+                        "before": end_date
+                    }
+                }
+            ]
+        }
+    ).get('results', [])
+    
+    for page in notion_events:
+        uid_property = page.get('properties', {}).get('EventUID', {}).get('rich_text', [])
+        if uid_property and uid_property[0].get('text', {}).get('content'):
+            event_uid = uid_property[0]['text']['content']
+            
+            # If this UID wasn't in our synced events, archive/delete it
+            if event_uid not in synced_uids:
+                log(f"Archiving event that's no longer in calendar: {event_uid}")
+                # Option 1: Archive the page
+                notion.pages.update(
+                    page_id=page['id'],
+                    archived=True
+                )
+                # Option 2: Delete the page (uncomment if you prefer deletion)
+                # notion.pages.delete(page_id=page['id'])
+
+# Example usage
+# Replace the test code with a proper sync
+# sync_calendar_to_notion()
+
+# For testing purposes only - should be replaced with sync_calendar_to_notion() call
+test_event = {
+    'uid': 'test-event-123',
+    'summary': 'Test Calendar Event',
+    'start': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2),
+    'end': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2, hours=1),
+    'all_day': False,
+}
+sync_event_to_notion(test_event)
