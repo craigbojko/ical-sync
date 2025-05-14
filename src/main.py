@@ -1,4 +1,4 @@
-import os, datetime, requests
+import os, datetime, requests, hashlib
 import recurring_ical_events
 from icalendar import Calendar, Event
 from google.oauth2 import service_account
@@ -7,14 +7,17 @@ from loadotenv import load_env
 from typing import TypedDict, Any
 from notion_client import Client
 
-# Load environment variables from ../.env
-load_env(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+from notion.connect import NotionDatabaseConnector
+from notion.driver import NotionDatabaseDriver
 
+# Load environment variables from ../.env
+# load_env(os.path.join(os.path.dirname(os.path.dirname(__file__)), "../.env"))
+load_env(os.path.join(os.getcwd(), ".env"))
+
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 ICS_URL = os.getenv("ICAL")
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE")
 PERSONAL_CAL_ID = "primary"
-
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 
 NUMBER_OF_DAYS_TO_SYNC = 14
 
@@ -40,10 +43,16 @@ def compile_event(event) -> CalEvent:
     """
     Compile event details into a dictionary.
     """
+    start = convert_to_utc(event.decoded('DTSTART'))
+    start_date = start.strftime("%Y%m%d")
+    uid = event.get('UID')
+    composite_uid = hashlib.md5(f"{uid}_{start_date}".encode()).hexdigest()
+    
     return {
-        'uid': event.get('uid'),
+        'uid': uid,
+        'instance_uid': composite_uid,
         'summary': event.get('summary'),
-        'start': convert_to_utc(event.decoded('DTSTART')),
+        'start': start,
         'end': convert_to_utc(event.decoded('DTEND')),
         'raw': event.to_ical().decode('utf-8'),
         'all_day': event.get('X-MICROSOFT-CDO-ALLDAYEVENT') == "TRUE"
@@ -173,11 +182,27 @@ def sync_event_to_notion(event: CalEvent):
     existing_pages = notion.databases.query(
         database_id=database_id,
         filter={
-            "property": "EventUID",
+            "property": "InstanceUID",
             "rich_text": {
-                "equals": event['uid']
+                "equals": event['instance_uid']
             }
-        }
+        },
+        # filter={
+        #     "or": [
+        #         {
+        #             "property": "InstanceUID",
+        #             "rich_text": {
+        #                 "equals": event['instance_uid']
+        #             }
+        #         },
+        #         {
+        #             "property": "EventUID",
+        #             "rich_text": {
+        #                 "equals": event['uid']
+        #             }
+        #         }
+        #     ]
+        # }
     ).get('results', [])
     
     # Prepare properties to update or create
@@ -206,9 +231,15 @@ def sync_event_to_notion(event: CalEvent):
                 }
             ]
         },
-        "AllDay": {
-            "checkbox": event['all_day']
-        }
+        "InstanceUID": {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": event['instance_uid']
+                    }
+                }
+            ]
+        },
     }
     
     if existing_pages:
@@ -270,7 +301,7 @@ def sync_calendar_to_notion():
             
         # Sync to Notion
         page_id = sync_event_to_notion(event)
-        synced_uids.append(event['uid'])
+        synced_uids.append(event['instance_uid'])
         log(f"Synced event: {event['summary']}")
     
     # Optional: Remove events from Notion that no longer exist in the calendar
@@ -307,32 +338,70 @@ def cleanup_orphaned_events(synced_uids, database_id):
         }
     ).get('results', [])
     
+    print(f"Found {len(notion_events)} events in Notion within the date range")
+    
     for page in notion_events:
-        uid_property = page.get('properties', {}).get('EventUID', {}).get('rich_text', [])
+        uid_property = page.get('properties', {}).get('InstanceUID', {}).get('rich_text', [])
         if uid_property and uid_property[0].get('text', {}).get('content'):
-            event_uid = uid_property[0]['text']['content']
+            uid = uid_property[0]['text']['content']
             
             # If this UID wasn't in our synced events, archive/delete it
-            if event_uid not in synced_uids:
-                log(f"Archiving event that's no longer in calendar: {event_uid}")
+            if uid not in synced_uids:
+                log(f"Archiving event that's no longer in calendar: {uid} | {page['id']}")
                 # Option 1: Archive the page
                 notion.pages.update(
                     page_id=page['id'],
                     archived=True
                 )
                 # Option 2: Delete the page (uncomment if you prefer deletion)
-                # notion.pages.delete(page_id=page['id'])
+                ## Call notion api directly to delete the page
+                # requests.delete(
+                #     f"https://api.notion.com/v1/pages/{page['id']}",
+                #     headers={
+                #         "Authorization": f"Bearer {NOTION_API_KEY}",
+                #     }
+                # )
+                # log(f"Deleted orphaned event: {uid}")
 
-# Example usage
-# Replace the test code with a proper sync
-# sync_calendar_to_notion()
 
-# For testing purposes only - should be replaced with sync_calendar_to_notion() call
-test_event = {
-    'uid': 'test-event-123',
-    'summary': 'Test Calendar Event',
-    'start': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2),
-    'end': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2, hours=1),
-    'all_day': False,
-}
-sync_event_to_notion(test_event)
+def main():
+    """
+    Main function to connect to Notion and create or query a calendar sync database.
+    """
+    # Initialize the Notion client
+    notion = Client(auth=NOTION_API_KEY)
+
+    # Create a NotionDatabaseConnector instance
+    connector = NotionDatabaseConnector(notion)
+    connection_details = connector.get_driver_database()
+    print(f"Connection details: {connection_details}")
+    
+    driver = NotionDatabaseDriver(notion, connection_details['page_id'], connection_details['database_id'])
+    sync_items = driver.get_sync_items()
+    
+    if len(sync_items) == 0:
+        print("No sync items found in Notion database.")
+        return
+
+    driver.sync_items(sync_items)
+    
+    # Example usage
+    # Replace the test code with a proper sync
+    # sync_calendar_to_notion()
+
+    # For testing purposes only - should be replaced with sync_calendar_to_notion() call
+    # test_event = {
+    #     'uid': 'test-event-123',
+    #     'summary': 'Test Calendar Event',
+    #     'start': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2),
+    #     'end': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2, hours=1),
+    #     'all_day': False,
+    # }
+    # sync_event_to_notion(test_event)
+
+
+
+if __name__ == "__main__":
+    # Run the main function
+    # when the script is executed directly
+    main()
