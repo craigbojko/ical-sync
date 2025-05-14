@@ -17,6 +17,11 @@ def dev(c):
     ")
 
 @task
+def start(c):
+    """Run the app"""
+    c.run("PYTHONPATH=src python src/main.py")
+
+@task
 def test(c):
     """Run tests using pytest with verbose output."""
     c.run("PYTHONPATH=src pytest -v \
