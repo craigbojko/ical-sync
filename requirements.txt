@@ -12,3 +12,4 @@ pytest==8.3.5
 pytest-watch==4.2.0
 pytest-md-report==0.7.0
 pytest-cov==6.1.1
+notion-client==2.3.0
