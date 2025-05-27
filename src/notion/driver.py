@@ -2,9 +2,8 @@
 
 import sys
 from typing import TypedDict
-from loadotenv import load_env
 from notion_client import Client
-
+from .calendar import CalendarSync
 
 class DriverSyncItem(TypedDict):
     """
@@ -43,17 +42,8 @@ class NotionDatabaseDriver:
         """
         Sync items to the Notion database.
         """
-        formatted_items = self.__resolve_sync_items_from_notion_db(items)
-        new_databases_to_create = []
-        databases_to_sync = []
+        databases_to_sync, new_databases_to_create = self.__get_databases_to_sync(items)
         new_setup = False
-
-        for item in formatted_items:
-            has_database_id = item.get("database_id").get("rich_text", [])
-            if len(has_database_id) > 0:
-                databases_to_sync.append(item)
-            else:
-                new_databases_to_create.append(item)
 
         if len(new_databases_to_create) > 0 and len(databases_to_sync) == 0:
             print("New setup detected. Adding database ID column to driver database.")
@@ -73,16 +63,62 @@ class NotionDatabaseDriver:
                 print(
                     f"Updated driver item with database ID: {item['database_id']}"
                 )
-
             print(f"New databases created: {new_items}")
         else:
             print("No new databases to create.")
 
-        if len(databases_to_sync) > 0:
-            print(f"Syncing existing databases: {databases_to_sync}")
-            # Logic to sync existing databases
-        else:
+        if len(databases_to_sync) <= 0:
             print("No existing databases to sync.")
+        
+        print(f"Syncing existing databases: {databases_to_sync}")
+        # Create a CalendarSync instance for each database to sync
+        for item in databases_to_sync:
+            database_item_id = None
+            try:
+                database_item_id = item.get("database_id")
+                
+                # If not string type, try to get the ID from the rich text
+                if isinstance(database_item_id, dict):
+                    database_item_id = database_item_id.get("rich_text", [{}])[0].get("text", {}).get("content", "")
+            except (IndexError, KeyError):
+                print(f"Error retrieving database ID for item {item}: {sys.exc_info()[1]}", file=sys.stderr)
+                continue
+
+            if not database_item_id:
+                print(f"Skipping item {item} due to missing database ID.", file=sys.stderr)
+                continue
+            
+            try:
+                print(f"Syncing calendar for item: {item['identifier']} with database ID: {database_item_id}")
+                
+                # Create a CalendarSync instance
+                # and sync the calendar
+                calendar_to_sync = CalendarSync(
+                    notion=self.notion,
+                    database_id=database_item_id,
+                )
+                calendar_to_sync.set_ics_url(item["ical_url"])
+                calendar_to_sync.sync_calendar()
+            except Exception as e:
+                print(f"Error syncing calendar for item {item}: {e}", file=sys.stderr)
+                raise e
+
+    def __get_databases_to_sync(self, items: list[DriverSyncItem]) -> list[DriverSyncItem]:
+        """
+        Get the databases to sync from the driver items.
+        """
+        databases_to_sync = []
+        databases_to_create = []
+        formatted_items = self.__resolve_sync_items_from_notion_db(items)
+
+        for item in formatted_items:
+            has_database_id = item.get("database_id").get("rich_text", [])
+            if len(has_database_id) > 0:
+                databases_to_sync.append(item)
+            else:
+                databases_to_create.append(item)
+
+        return databases_to_sync, databases_to_create
 
     def __create_databases_for_new_items(
         self, items: list[DriverSyncItem]

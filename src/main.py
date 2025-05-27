@@ -1,14 +1,18 @@
-import os, datetime, requests, hashlib
+import os
+import datetime
+import requests
 import recurring_ical_events
-from icalendar import Calendar, Event
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from icalendar import Calendar
+# from google.oauth2 import service_account
+# from googleapiclient.discovery import build
 from loadotenv import load_env
-from typing import TypedDict, Any
 from notion_client import Client
 
 from notion.connect import NotionDatabaseConnector
 from notion.driver import NotionDatabaseDriver
+
+from helpers.logger import log
+from entities.calendar_event import compile_event, CalendarEvent
 
 # Load environment variables from ../.env
 # load_env(os.path.join(os.path.dirname(os.path.dirname(__file__)), "../.env"))
@@ -31,33 +35,6 @@ notion = Client(auth=NOTION_API_KEY)
 idx = 0
 events_by_date = {}
 
-class CalEvent(TypedDict):
-    uid: str
-    summary: str
-    start: datetime.datetime
-    end: datetime.datetime
-    all_day: bool
-    raw: Any
-
-def compile_event(event) -> CalEvent:
-    """
-    Compile event details into a dictionary.
-    """
-    start = convert_to_utc(event.decoded('DTSTART'))
-    start_date = start.strftime("%Y%m%d")
-    uid = event.get('UID')
-    composite_uid = hashlib.md5(f"{uid}_{start_date}".encode()).hexdigest()
-    
-    return {
-        'uid': uid,
-        'instance_uid': composite_uid,
-        'summary': event.get('summary'),
-        'start': start,
-        'end': convert_to_utc(event.decoded('DTEND')),
-        'raw': event.to_ical().decode('utf-8'),
-        'all_day': event.get('X-MICROSOFT-CDO-ALLDAYEVENT') == "TRUE"
-    }
-
 def track_event(event):
     """
     Track event details by date.
@@ -68,38 +45,6 @@ def track_event(event):
     if date_str not in events_by_date:
         events_by_date[date_str] = []
     events_by_date[date_str].append(compile_event(event))
-
-def log(message, level="INFO"):
-    """
-    Log messages to the console.
-    """
-    print(f"[{level}] {message}")
-
-def log_event(event):
-    """
-    Log event details to the console.
-    """
-    log(f"Event UID: {event['uid']}")
-    log(f"Event summary: {event['summary']}")
-    log(f"Event start: {event.get('start').isoformat()}, type: {type(event.decoded('DTSTART'))}")
-    log(f"Event end: {event.get('end').isoformat()}, type: {type(event.decoded('DTEND'))}")
-    log(f"Event all_day: {event['all_day']}")
-    if CONFIG['DBBUG']: log(f"Event raw: {event.to_ical().decode('utf-8')}", level="DEBUG")
-
-def convert_to_utc(dt: datetime.datetime) -> datetime.datetime:
-    """
-    Convert a datetime object to UTC.
-    """
-    if isinstance(dt, datetime.date) and not isinstance(dt, datetime.datetime):
-        # Convert date to datetime at midnight
-        dt = datetime.datetime.combine(dt, datetime.time.min, tzinfo=datetime.timezone.utc)
-    elif dt.tzinfo is None:
-        # Add UTC timezone if naive datetime
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    else:
-        # Convert to UTC if it has a different timezone
-        dt = dt.astimezone(datetime.timezone.utc)
-    return dt
 
 # 1. Fetch ICS
 # resp = requests.get(ICS_URL)
@@ -170,7 +115,7 @@ def convert_to_utc(dt: datetime.datetime) -> datetime.datetime:
 # print(f"Calendar database: ", calendar_database)
 
 # Add an event to Notion calendar database
-def sync_event_to_notion(event: CalEvent):
+def sync_event_to_notion(event: CalendarEvent):
     """
     Sync an event to the Notion calendar database.
     If the event already exists (by UID), update it.
